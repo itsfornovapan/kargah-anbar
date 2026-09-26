@@ -655,11 +655,9 @@ function save() {
       hardware: state.hardware, templates: state.templates, jobs: state.jobs
     }));
     
-    // Also sync to cloud if available
     // Sync to cloud asynchronously
     if (typeof API_BASE !== 'undefined' && API_BASE) {
       setTimeout(() => syncToCloud(), 0);
-    }
     }
   } catch(e) { console.warn(e); }
 }
@@ -2709,21 +2707,6 @@ function syncToCloud() {
     }
   });
 }
-
-// Override getInvoiceNumber to use cloud if available
-const origGetInvoiceNumber = window.getInvoiceNumber;
-window.getInvoiceNumber = async function(templateId) {
-  if (typeof API_BASE !== 'undefined' && API_BASE) {
-    try {
-      const res = await fetch(API_BASE + '/api/invoice-number');
-      const data = await res.json();
-      return data.number || '001';
-    } catch (err) {
-      // Fallback to local
-    }
-  }
-  return origGetInvoiceNumber ? origGetInvoiceNumber(templateId) : '001';
-};
 
 /* =========================================================
    Init
