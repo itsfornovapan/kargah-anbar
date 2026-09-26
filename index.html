@@ -656,24 +656,40 @@ function save() {
     }));
     
     // Also sync to cloud if available
-    if (typeof saveToCloud === 'function') {
-      saveToCloud().catch(console.error);
+    // Cloud sync will be handled by cloud-config.js if loaded
     }
   } catch(e) { console.warn(e); }
 }
 function load() {
   try {
-    // Check cloud mode first
-    if (typeof isCloudMode === 'function' && isCloudMode()) {
-      loadFromCloud().then(success => {
-        if (!success) {
+    // Try cloud first if available
+    if (typeof API_BASE !== 'undefined' && API_BASE && typeof fetch === 'function') {
+      fetch(API_BASE + '/api/tools')
+        .then(r => r.json())
+        .then(data => {
+          if (Array.isArray(data)) {
+            state.tools = data;
+            return Promise.all([
+              fetch(API_BASE + '/api/sheets').then(r => r.json()),
+              fetch(API_BASE + '/api/hardware').then(r => r.json()),
+              fetch(API_BASE + '/api/templates').then(r => r.json()),
+              fetch(API_BASE + '/api/jobs').then(r => r.json())
+            ]);
+          }
+          return [];
+        })
+        .then(([sheets, hardware, templates, jobs]) => {
+          if (Array.isArray(sheets)) state.sheets = sheets;
+          if (Array.isArray(hardware)) state.hardware = hardware;
+          if (Array.isArray(templates)) state.templates = templates;
+          if (Array.isArray(jobs)) state.jobs = jobs;
+          render();
+        })
+        .catch(err => {
+          console.warn('Cloud load failed, using localStorage:', err);
           loadFromLocalStorage();
-        }
-        render();
-      }).catch(() => {
-        loadFromLocalStorage();
-        render();
-      });
+          render();
+        });
     } else {
       loadFromLocalStorage();
       render();
