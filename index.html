@@ -656,9 +656,9 @@ function save() {
     }));
     
     // Sync to cloud asynchronously
-    if (typeof API_BASE !== 'undefined' && API_BASE) {
-      setTimeout(() => syncToCloud(), 0);
-    }
+    // if (typeof API_BASE !== 'undefined' && API_BASE) {
+    //   setTimeout(() => syncToCloud(), 0);
+    // }
   } catch(e) { console.warn(e); }
 }
 function load() {
@@ -667,9 +667,9 @@ function load() {
     render();
     
     // Try to sync from cloud asynchronously (non-blocking)
-    if (typeof API_BASE !== 'undefined' && API_BASE) {
-      syncFromCloud().catch(err => console.warn('Cloud sync failed:', err));
-    }
+    // if (typeof API_BASE !== 'undefined' && API_BASE) {
+    //   syncFromCloud().catch(err => console.warn('Cloud sync failed:', err));
+    // }
   } catch(e) { 
     console.warn(e);
     render();
