@@ -2062,7 +2062,7 @@ async function printInvoice(tplId){
     .summary .big{border-top:2px solid #111;margin-top:6px;padding-top:12px;font-size:16px;font-weight:700}
     .notes{margin-top:20px;padding:12px 14px;background:#f9fafb;border-inline-start:4px solid #2563eb;border-radius:6px;font-size:12.5px;color:#333}
     @media print{ body{padding:20px 24px} }
-  </style></head><body>
+  <\/style><\/head><body>
     <div class="head">
       <div><h1>دکور سهند</h1><div class="sub">${faNow()}</div></div>
       <div class="num">#${invNum}</div>
@@ -2087,7 +2087,7 @@ async function printInvoice(tplId){
       <div class="row big"><span>مبلغ نهایی قابل پرداخت:</span><span class="num-col">${fmtInt(tt.total)} تومان</span></div>
     </div>
     ${t.notes ? `<div class="notes"><b>توضیحات:</b> ${esc(t.notes)}</div>` : ''}
-  </body></html>`;
+  <\/body><\/html>`;
 
   const iframe = document.createElement('iframe');
   iframe.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;opacity:0';
