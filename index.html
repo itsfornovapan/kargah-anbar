@@ -4,6 +4,15 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=5, viewport-fit=cover">
 <meta name="theme-color" content="#0b1220">
+<meta name="description" content="انبار کارگاه دکور سهند — مدیریت ابزار، ورق، یراق‌آلات، فاکتور و امانت ابزار">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="favicon-16.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="انبار کارگاه">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>انبارگردانی کارگاه</title>
 <style>
 :root,[data-theme="dark"]{
@@ -527,6 +536,7 @@ const API_KEY = 'wYb9XPNSAGPE7ZLEe98hypIfzo8cvZZfHWte6Ug6myGutboJ';
 function ico(n, s){
   s = s || 18;
   const P = {
+    phone:'<rect x="6.5" y="2.5" width="11" height="19" rx="2.5"/><line x1="10.5" y1="18.4" x2="13.5" y2="18.4"/>',
     menu:'<line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>',
     x:'<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
     sun:'<circle cx="12" cy="12" r="4"/><line x1="12" y1="2" x2="12" y2="4"/><line x1="12" y1="20" x2="12" y2="22"/><line x1="4.93" y1="4.93" x2="6.34" y2="6.34"/><line x1="17.66" y1="17.66" x2="19.07" y2="19.07"/><line x1="2" y1="12" x2="4" y2="12"/><line x1="20" y1="12" x2="22" y2="12"/><line x1="6.34" y1="17.66" x2="4.93" y2="19.07"/><line x1="19.07" y1="4.93" x2="17.66" y2="6.34"/>',
@@ -698,26 +708,37 @@ function storeSyncedIds(idsByTable){
 function idsOf(rows){ return rows.map(r => r && r.id).filter(Boolean); }
 
 /* Merge cloud rows with the local copy.
-   - row exists in cloud            -> cloud version wins
-   - row only local, NOT synced before -> just created here, keep it
-   - row only local, WAS synced before -> deleted on another device, drop it  */
-function mergeRows(prevIds, cloudRows, localRows){
-  const inCloud = new Set(cloudRows.map(r => r.id));
+   localWins = false -> the server copy wins for rows both sides have
+   localWins = true  -> this device's copy wins (we are about to push it)
+   A row that the last sync knew about but the server no longer returns was
+   deleted on another device -> it is dropped in both modes.                */
+function mergeRows(prevIds, cloudRows, localRows, localWins){
+  const inCloud = new Set(cloudRows.map(r => r && r.id));
   const synced = new Set(prevIds || []);
-  const freshLocal = localRows.filter(r => r && r.id && !inCloud.has(r.id) && !synced.has(r.id));
-  return freshLocal.concat(cloudRows);
+  const localList = (localRows || []).filter(r => r && r.id);
+  const localIds = new Set(localList.map(r => r.id));
+  const keepLocal = localList.filter(r =>
+    inCloud.has(r.id) ? !!localWins : !synced.has(r.id));
+  if (!localWins) return keepLocal.concat(cloudRows);
+  const cloudOnly = (cloudRows || []).filter(r => r && r.id && !localIds.has(r.id));
+  return keepLocal.concat(cloudOnly);
 }
-let cloudPulled = false;   // true once the first successful pull finishes
-let cloudPushQueued = false; // true if the user edited before the first pull
+
+let cloudPulled = false;    // true once the first pull finishes (success or not)
+let cloudPushQueued = false;// user edited before that first pull landed
 let cloudPushTimer = null;
-let cloudWarned = false;   // only warn the user once per session
+let cloudRetryTimer = null;
+let cloudWarned = false;    // only warn the user once per session
+let cloudDirty = false;     // local edits the server has not confirmed yet
+let cloudBusy = false;      // one sync at a time
+let editGen = 0;            // bumped on every local edit
 
 function cloudUnreachable(reason){
   console.warn('Cloud sync unavailable:', reason);
   if (cloudWarned) return;
   cloudWarned = true;
   try {
-    toast('همگام‌سازی ابری در دسترس نیست — داده‌ها فقط روی همین دستگاه ذخیره می‌شود', 'warn');
+    toast('همگام‌سازی ابری در دسترس نیست — داده‌ها روی همین دستگاه ذخیره و بعداً ارسال می‌شود', 'warn');
   } catch(_){}
 }
 
@@ -742,20 +763,10 @@ function load() {
     loadFromLocalStorage();
     render();
     if (cloudOn()) syncFromCloud();
-  } catch(e) { 
+  } catch(e) {
     console.warn(e);
     render();
   }
-}
-
-/* Rows that exist only in the cloud are appended to `local`. Rows the user
-   created while the pull was still running are kept untouched. */
-function appendMissing(local, cloudRows){
-  const have = new Set(local.map(r => r && r.id));
-  (cloudRows || []).forEach(r => {
-    if (r && r.id && !have.has(r.id)) { local.push(r); have.add(r.id); }
-  });
-  return local;
 }
 
 function persistLocal(){
@@ -765,6 +776,17 @@ function persistLocal(){
       hardware: state.hardware, templates: state.templates, jobs: state.jobs
     }));
   } catch(e) {}
+}
+
+function localHasData(){
+  return !!(state.tools.length || state.sheets.length || state.hardware.length ||
+            state.templates.length || state.jobs.length);
+}
+
+function idsBy(tableRows){
+  const o = {};
+  CLOUD_TABLES.forEach(t => { o[t] = idsOf(tableRows[t] || []); });
+  return o;
 }
 
 /* A failed request must never be mistaken for an empty table: pushing then
@@ -779,63 +801,66 @@ function pullTable(t){
     .catch(err => ({ ok: false, err: err }));
 }
 
-function syncFromCloud() {
-  if (!cloudOn()) return Promise.resolve();
+function pullAll(){
   return Promise.all(CLOUD_TABLES.map(pullTable)).then(results => {
     const failed = results.filter(r => !r.ok);
     if (failed.length) {
-      // Cloud state unknown -> leave local data alone and never push over it
-      cloudUnreachable('pull failed: ' + (failed[0].err && failed[0].err.message));
+      const e = failed[0].err;
+      return { ok: false, err: (e && e.message) || 'request failed' };
+    }
+    const byTable = {};
+    CLOUD_TABLES.forEach((t, i) => { byTable[t] = results[i].rows; });
+    return { ok: true, byTable: byTable };
+  });
+}
+
+const cloudHasAny = byTable => CLOUD_TABLES.some(t => (byTable[t] || []).length > 0);
+
+/* Fold freshly pulled rows into `state`. Returns true when something changed. */
+function adoptCloud(byTable, localWins){
+  const prev = loadSyncedIds();
+  const snap = () => JSON.stringify([state.tools, state.sheets, state.hardware, state.templates, state.jobs]);
+  const before = snap();
+  CLOUD_TABLES.forEach(t => {
+    state[t] = mergeRows(prev[t], byTable[t] || [], state[t] || [], localWins);
+  });
+  const changed = before !== snap();
+  storeSyncedIds(idsBy(byTable));
+  if (changed) { persistLocal(); render(); }
+  return changed;
+}
+
+function retryLater(fn){
+  if (cloudRetryTimer) return;
+  cloudRetryTimer = setTimeout(() => { cloudRetryTimer = null; fn(); }, 5000);
+}
+
+/* Pull on load: take the server's copy — unless this device already edited
+   something while the pull was still in flight. */
+function syncFromCloud() {
+  if (!cloudOn()) return Promise.resolve();
+  return pullAll().then(res => {
+    if (!res.ok) {
+      cloudUnreachable('pull failed: ' + res.err);
       cloudPulled = true;
-      if (cloudPushQueued) setTimeout(() => syncFromCloud(), 5000);
+      if (cloudPushQueued || cloudDirty) retryLater(syncFromCloud);
       return;
     }
-    const [tools, sheets, hardware, templates, jobs] = results.map(r => r.rows);
-    const cloudHasData = tools.length || sheets.length || hardware.length ||
-                         templates.length || jobs.length;
-    const localHasData = state.tools.length || state.sheets.length ||
-                         state.hardware.length || state.templates.length || state.jobs.length;
-    const editedDuringPull = cloudPushQueued;
-
     cloudPulled = true;
-
-    if (editedDuringPull) {
-      // The user already created/edited something before the pull landed:
-      // never overwrite it — only add the rows this device does not have yet.
-      appendMissing(state.tools, tools);
-      appendMissing(state.sheets, sheets);
-      appendMissing(state.hardware, hardware);
-      appendMissing(state.templates, templates);
-      appendMissing(state.jobs, jobs);
-      persistLocal();
-      render();
-    } else if (cloudHasData) {
-      // Nothing edited yet -> the cloud copy wins, but rows this device
-      // created since the last sync are kept instead of being thrown away.
-      const prev = loadSyncedIds();
-      state.tools = mergeRows(prev.tools, tools, state.tools);
-      state.sheets = mergeRows(prev.sheets, sheets, state.sheets);
-      state.hardware = mergeRows(prev.hardware, hardware, state.hardware);
-      state.templates = mergeRows(prev.templates, templates, state.templates);
-      state.jobs = mergeRows(prev.jobs, jobs, state.jobs);
-      persistLocal();
-      render();
-    } else if (localHasData) {
-      // Cloud is empty but this device has data -> seed the database
-      syncToCloud();
+    if (cloudPushQueued) {                 // an edit is already waiting to go up
+      cloudPushQueued = false;
+      return syncToCloud();
+    }
+    if (!cloudHasAny(res.byTable)) {       // empty database
+      storeSyncedIds(idsBy(res.byTable));
+      if (localHasData()) return syncToCloud();   // seed it from this device
       return;
     }
-
-    storeSyncedIds({
-      tools: idsOf(tools), sheets: idsOf(sheets), hardware: idsOf(hardware),
-      templates: idsOf(templates), jobs: idsOf(jobs)
-    });
-    if (cloudPushQueued) { cloudPushQueued = false; syncToCloud(); }
+    adoptCloud(res.byTable, false);
   }).catch(err => {
     cloudUnreachable(err && err.message);
-    // Offline: local state stays authoritative so edits still push later
     cloudPulled = true;
-    if (cloudPushQueued) setTimeout(() => syncFromCloud(), 5000);
+    if (cloudPushQueued || cloudDirty) retryLater(syncFromCloud);
   });
 }
 
@@ -843,32 +868,56 @@ function syncFromCloud() {
 // would wipe the whole cloud database with its empty state.
 function queueSyncToCloud(){
   if (!cloudOn()) return;
+  editGen++; cloudDirty = true;
   if (!cloudPulled) { cloudPushQueued = true; return; }
   clearTimeout(cloudPushTimer);
   cloudPushTimer = setTimeout(syncToCloud, 400);
 }
 
-// One atomic PUT per table (worker deletes + reinserts in a single batch)
+/* Pull first, reconcile, then replace every table in one atomic PUT.
+   The pre-push pull is exactly what makes deletions stick: rows this device
+   still holds but the server no longer returns were removed elsewhere, so
+   they are dropped instead of being uploaded back.                          */
 function syncToCloud(){
-  if (!cloudOn()) return Promise.resolve();
-  const snapshot = {
-    tools: state.tools, sheets: state.sheets, hardware: state.hardware,
-    templates: state.templates, jobs: state.jobs
-  };
-  return Promise.all(CLOUD_TABLES.map(t =>
-    fetch(API_BASE + '/api/' + t, apiOptions({
-      method: 'PUT',
-      body: JSON.stringify(snapshot[t])
-    })).then(r => readJson(r))
-  )).then(() => {
-    // whatever we just pushed is now the shared truth
-    storeSyncedIds({
-      tools: idsOf(snapshot.tools), sheets: idsOf(snapshot.sheets),
-      hardware: idsOf(snapshot.hardware), templates: idsOf(snapshot.templates),
-      jobs: idsOf(snapshot.jobs)
+  if (!cloudOn() || cloudBusy) return Promise.resolve();
+  cloudBusy = true;
+  const gen = editGen;
+  return pullAll().then(res => {
+    if (!res.ok) {
+      cloudUnreachable('push skipped — pull failed: ' + res.err);
+      if (cloudDirty) retryLater(syncToCloud);
+      return;
+    }
+    cloudPulled = true;
+    if (cloudHasAny(res.byTable)) adoptCloud(res.byTable, true);
+    else storeSyncedIds(idsBy(res.byTable));
+
+    const snapshot = {
+      tools: state.tools, sheets: state.sheets, hardware: state.hardware,
+      templates: state.templates, jobs: state.jobs
+    };
+    return Promise.all(CLOUD_TABLES.map(t =>
+      fetch(API_BASE + '/api/' + t, apiOptions({
+        method: 'PUT',
+        body: JSON.stringify(snapshot[t])
+      })).then(r => readJson(r))
+    )).then(() => {
+      storeSyncedIds(idsBy(snapshot));
+      cloudPushQueued = false;
+      if (editGen === gen) cloudDirty = false;
+      else retryLater(syncToCloud);        // edited while the push was running
+      console.log('Cloud sync OK');
     });
-    console.log('Cloud sync OK');
-  }).catch(err => cloudUnreachable(err && err.message));
+  }).catch(err => cloudUnreachable(err && err.message))
+    .finally(() => { cloudBusy = false; });
+}
+
+/* Offline support: keep trying to flush local edits until one succeeds. */
+if (typeof window !== 'undefined') {
+  window.addEventListener('online', () => { if (cloudDirty) syncToCloud(); });
+  setInterval(() => {
+    if (cloudDirty && !cloudBusy && (typeof navigator === 'undefined' || navigator.onLine !== false)) syncToCloud();
+  }, 20000);
 }
 
 function loadFromLocalStorage() {
@@ -2338,7 +2387,20 @@ function viewSettings(){
         <tr><td>کارها (باز / کل)</td><td>${fmt(jobsOpen().length)} / ${fmt(totals.jobs)}</td></tr>
       </tbody>
     </table></div>
-  </div>`;
+  </div>
+
+  <div class="card" style="--d:4">
+    ${secHead('phone', 'نصب روی گوشی (نسخه مستقل)', null)}
+    <p class="hint">با نصب، آیکون اختصاصی <b style="color:var(--txt)">decor sahand</b> روی صفحه اصلی قرار می‌گیرد، اپ مثل یک برنامه مستقل باز می‌شود و بدون اینترنت هم کار می‌کند.</p>
+    <div class="row" style="margin-top:12px">
+      <button class="btn pri" data-act="install-pwa">${ico('phone',15)} نصب اپلیکیشن</button>
+    </div>
+    <div class="hint" style="margin-top:10px">
+      در اندروید: همین دکمه یا منوی مرورگر ← «نصب برنامه».<br>
+      در آیفون: دکمه اشتراک‌گذاری مرورگر ← «افزودن به صفحه اصلی».
+    </div>
+  </div>
+  `;
 }
 
 function exportBackup(){
@@ -2767,6 +2829,7 @@ function handleAction(act, d){
 
     case 'export': exportBackup(); break;
     case 'export-html': exportHTML(); break;
+    case 'install-pwa': installPwa(); break;
     case 'import': document.getElementById('fileIn').click(); break;
     case 'wipe':
       if (confirm('همه داده‌ها پاک شوند؟')){
@@ -2854,6 +2917,40 @@ function loadDemo(){
 }
 
 
+
+/* =========================================================
+   PWA — offline shell, install prompt, connectivity toasts
+========================================================= */
+let deferredInstallPrompt = null;
+
+window.addEventListener('beforeinstallprompt', e => {
+  e.preventDefault();               // keep our own button in charge
+  deferredInstallPrompt = e;
+});
+
+function installPwa(){
+  if (!deferredInstallPrompt){
+    toast('از منوی مرورگر گزینه «افزودن به صفحه اصلی» یا «نصب برنامه» را بزنید', 'info');
+    return;
+  }
+  deferredInstallPrompt.prompt();
+  deferredInstallPrompt.userChoice.then(() => { deferredInstallPrompt = null; }).catch(() => {});
+}
+
+window.addEventListener('offline', () => {
+  toast('آفلاین — تغییرات روی این دستگاه ذخیره و بعداً ارسال می‌شود', 'warn');
+});
+window.addEventListener('online', () => {
+  toast('اتصال برقرار شد — همگام‌سازی ادامه دارد', 'ok');
+});
+
+if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./sw.js')
+      .then(reg => console.log('Service worker registered:', reg.scope))
+      .catch(err => console.warn('Service worker failed:', err));
+  });
+}
 
 /* =========================================================
    Init
