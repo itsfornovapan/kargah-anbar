@@ -654,22 +654,24 @@ function save() {
       tools: state.tools, sheets: state.sheets,
       hardware: state.hardware, templates: state.templates, jobs: state.jobs
     }));
-    
-    // Sync to cloud asynchronously
-    // if (typeof API_BASE !== 'undefined' && API_BASE) {
-    //   setTimeout(() => syncToCloud(), 0);
-    // }
+    queueSyncToCloud();
   } catch(e) { console.warn(e); }
 }
+/* =========================================================
+   Cloud sync: pull full state from API, then push local edits
+========================================================= */
+const CLOUD_TABLES = ['tools', 'sheets', 'hardware', 'templates', 'jobs'];
+let cloudPulled = false;   // true once the first successful pull finishes
+let cloudPushQueued = false; // true if the user edited before the first pull
+let cloudPushTimer = null;
+
+function cloudOn(){ return typeof API_BASE !== 'undefined' && API_BASE; }
+
 function load() {
   try {
     loadFromLocalStorage();
     render();
-    
-    // Try to sync from cloud asynchronously (non-blocking)
-    // if (typeof API_BASE !== 'undefined' && API_BASE) {
-    //   syncFromCloud().catch(err => console.warn('Cloud sync failed:', err));
-    // }
+    if (cloudOn()) syncFromCloud();
   } catch(e) { 
     console.warn(e);
     render();
@@ -677,25 +679,62 @@ function load() {
 }
 
 function syncFromCloud() {
-  if (!API_BASE) return Promise.resolve();
-  
-  return Promise.all([
-    fetch(API_BASE + '/api/tools').then(r => r.json()).then(d => Array.isArray(d) ? d : []),
-    fetch(API_BASE + '/api/sheets').then(r => r.json()).then(d => Array.isArray(d) ? d : []),
-    fetch(API_BASE + '/api/hardware').then(r => r.json()).then(d => Array.isArray(d) ? d : []),
-    fetch(API_BASE + '/api/templates').then(r => r.json()).then(d => Array.isArray(d) ? d : []),
-    fetch(API_BASE + '/api/jobs').then(r => r.json()).then(d => Array.isArray(d) ? d : [])
-  ]).then(([tools, sheets, hardware, templates, jobs]) => {
+  if (!cloudOn()) return Promise.resolve();
+  return Promise.all(CLOUD_TABLES.map(t =>
+    fetch(API_BASE + '/api/' + t)
+      .then(r => r.ok ? r.json() : [])
+      .then(d => Array.isArray(d) ? d : [])
+  )).then(rows => {
+    const [tools, sheets, hardware, templates, jobs] = rows;
+    // Cloud has data -> it wins over the local copy (fresh device / other device)
     if (tools.length || sheets.length || hardware.length || templates.length || jobs.length) {
       state.tools = tools;
       state.sheets = sheets;
       state.hardware = hardware;
       state.templates = templates;
       state.jobs = jobs;
-      save();
+      try {
+        localStorage.setItem(KEY, JSON.stringify({
+          tools: state.tools, sheets: state.sheets,
+          hardware: state.hardware, templates: state.templates, jobs: state.jobs
+        }));
+      } catch(e) {}
       render();
     }
+    cloudPulled = true;
+    if (cloudPushQueued) { cloudPushQueued = false; syncToCloud(); }
+  }).catch(err => {
+    console.warn('Cloud pull failed:', err);
+    // Offline: treat local state as authoritative so edits still push later
+    cloudPulled = true;
+    if (cloudPushQueued) { cloudPushQueued = false; syncToCloud(); }
   });
+}
+
+// Never push before the first pull finishes, otherwise a fresh device
+// would wipe the whole cloud database with its empty state.
+function queueSyncToCloud(){
+  if (!cloudOn()) return;
+  if (!cloudPulled) { cloudPushQueued = true; return; }
+  clearTimeout(cloudPushTimer);
+  cloudPushTimer = setTimeout(syncToCloud, 400);
+}
+
+// One atomic PUT per table (worker deletes + reinserts in a single batch)
+function syncToCloud(){
+  if (!cloudOn()) return Promise.resolve();
+  const snapshot = {
+    tools: state.tools, sheets: state.sheets, hardware: state.hardware,
+    templates: state.templates, jobs: state.jobs
+  };
+  return Promise.all(CLOUD_TABLES.map(t =>
+    fetch(API_BASE + '/api/' + t, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(snapshot[t])
+    }).then(r => r.ok ? r.json() : Promise.reject(new Error('PUT ' + t + ' -> ' + r.status)))
+  )).then(() => console.log('Cloud sync OK'))
+    .catch(err => console.warn('Cloud push failed:', err));
 }
 
 function loadFromLocalStorage() {
@@ -2680,33 +2719,6 @@ function loadDemo(){
 }
 
 
-function syncToCloud() {
-  if (!API_BASE) return;
-  
-  const items = {
-    tools: state.tools,
-    sheets: state.sheets,
-    hardware: state.hardware,
-    templates: state.templates,
-    jobs: state.jobs
-  };
-  
-  Object.entries(items).forEach(async ([table, data]) => {
-    try {
-      // Delete all and insert fresh
-      await fetch(API_BASE + '/api/' + table, { method: 'DELETE' });
-      for (const item of data) {
-        await fetch(API_BASE + '/api/' + table, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(item)
-        });
-      }
-    } catch (err) {
-      console.warn('Failed to sync', table, err);
-    }
-  });
-}
 
 /* =========================================================
    Init
