@@ -647,6 +647,28 @@ function assignInvoiceNumber(templateId){
     localStorage.setItem(prefix, String(count));
   }
 }
+/* Number shown in the invoice header. Stored on the template itself (t.invNum)
+   so it survives cloud sync and stays identical on every device. */
+function invoiceNumberFor(t){
+  if (t.invNum) return t.invNum;
+  const prefix = 'inv_num_' + t.id.slice(0,8);
+  let stored = null;
+  try { stored = localStorage.getItem(prefix); } catch(_){}
+  if (stored){
+    t.invNum = stored;
+    return stored;
+  }
+  let count = 0;
+  try { count = parseInt(localStorage.getItem(INV_COUNTER_KEY) || '0', 10) || 0; } catch(_){}
+  count++;
+  try {
+    localStorage.setItem(INV_COUNTER_KEY, String(count));
+    localStorage.setItem(prefix, String(count));
+  } catch(_){}
+  t.invNum = String(count).padStart(3,'0');
+  save();
+  return t.invNum;
+}
 
 function save() {
   try {
@@ -1965,6 +1987,7 @@ function viewTemplate(id){
   if (!t){ state.ui.openTemplate = null; return viewCalc(); }
   const tt = templateTotals(t);
   const items = t.items || [];
+  const invNum = invoiceNumberFor(t);
 
   return `
   <div class="row no-print" style="margin-bottom:12px">
@@ -2088,7 +2111,7 @@ function saveItem(tplId, itemId){
 async function printInvoice(tplId){
   const t = templateOf(tplId); if (!t) return;
   const tt = templateTotals(t);
-  const invNum = await getInvoiceNumber(t.id);
+  const invNum = invoiceNumberFor(t);
   const rows = (t.items||[]).map(it => `
     <tr>
       <td>${esc(it.type||'—')}</td>
