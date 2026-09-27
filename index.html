@@ -746,15 +746,30 @@ function persistLocal(){
   } catch(e) {}
 }
 
+/* A failed request must never be mistaken for an empty table: pushing then
+   would wipe the whole database. Every pull reports whether it succeeded. */
+function pullTable(t){
+  return fetch(API_BASE + '/api/' + t, apiOptions())
+    .then(r => readJson(r))
+    .then(d => {
+      if (!Array.isArray(d)) throw new Error('bad payload for ' + t);
+      return { ok: true, rows: d };
+    })
+    .catch(err => ({ ok: false, err: err }));
+}
+
 function syncFromCloud() {
   if (!cloudOn()) return Promise.resolve();
-  return Promise.all(CLOUD_TABLES.map(t =>
-    fetch(API_BASE + '/api/' + t, apiOptions())
-      .then(r => readJson(r).catch(() => []))
-      .catch(() => [])
-      .then(d => Array.isArray(d) ? d : [])
-  )).then(rows => {
-    const [tools, sheets, hardware, templates, jobs] = rows;
+  return Promise.all(CLOUD_TABLES.map(pullTable)).then(results => {
+    const failed = results.filter(r => !r.ok);
+    if (failed.length) {
+      // Cloud state unknown -> leave local data alone and never push over it
+      cloudUnreachable('pull failed: ' + (failed[0].err && failed[0].err.message));
+      cloudPulled = true;
+      if (cloudPushQueued) setTimeout(() => syncFromCloud(), 5000);
+      return;
+    }
+    const [tools, sheets, hardware, templates, jobs] = results.map(r => r.rows);
     const cloudHasData = tools.length || sheets.length || hardware.length ||
                          templates.length || jobs.length;
     const localHasData = state.tools.length || state.sheets.length ||
@@ -793,7 +808,7 @@ function syncFromCloud() {
     cloudUnreachable(err && err.message);
     // Offline: local state stays authoritative so edits still push later
     cloudPulled = true;
-    if (cloudPushQueued) { cloudPushQueued = false; syncToCloud(); }
+    if (cloudPushQueued) setTimeout(() => syncFromCloud(), 5000);
   });
 }
 
