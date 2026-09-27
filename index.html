@@ -686,6 +686,27 @@ function save() {
    Cloud sync: pull full state from API, then push local edits
 ========================================================= */
 const CLOUD_TABLES = ['tools', 'sheets', 'hardware', 'templates', 'jobs'];
+const SYNC_KEY = 'kargah_last_sync_ids';   // row ids seen at the last successful pull
+
+function loadSyncedIds(){
+  try { return JSON.parse(localStorage.getItem(SYNC_KEY) || '{}'); }
+  catch(_){ return {}; }
+}
+function storeSyncedIds(idsByTable){
+  try { localStorage.setItem(SYNC_KEY, JSON.stringify(idsByTable)); } catch(_){}
+}
+function idsOf(rows){ return rows.map(r => r && r.id).filter(Boolean); }
+
+/* Merge cloud rows with the local copy.
+   - row exists in cloud            -> cloud version wins
+   - row only local, NOT synced before -> just created here, keep it
+   - row only local, WAS synced before -> deleted on another device, drop it  */
+function mergeRows(prevIds, cloudRows, localRows){
+  const inCloud = new Set(cloudRows.map(r => r.id));
+  const synced = new Set(prevIds || []);
+  const freshLocal = localRows.filter(r => r && r.id && !inCloud.has(r.id) && !synced.has(r.id));
+  return freshLocal.concat(cloudRows);
+}
 let cloudPulled = false;   // true once the first successful pull finishes
 let cloudPushQueued = false; // true if the user edited before the first pull
 let cloudPushTimer = null;
@@ -789,12 +810,14 @@ function syncFromCloud() {
       persistLocal();
       render();
     } else if (cloudHasData) {
-      // Nothing edited yet -> the cloud copy wins (fresh / other device)
-      state.tools = tools;
-      state.sheets = sheets;
-      state.hardware = hardware;
-      state.templates = templates;
-      state.jobs = jobs;
+      // Nothing edited yet -> the cloud copy wins, but rows this device
+      // created since the last sync are kept instead of being thrown away.
+      const prev = loadSyncedIds();
+      state.tools = mergeRows(prev.tools, tools, state.tools);
+      state.sheets = mergeRows(prev.sheets, sheets, state.sheets);
+      state.hardware = mergeRows(prev.hardware, hardware, state.hardware);
+      state.templates = mergeRows(prev.templates, templates, state.templates);
+      state.jobs = mergeRows(prev.jobs, jobs, state.jobs);
       persistLocal();
       render();
     } else if (localHasData) {
@@ -803,6 +826,10 @@ function syncFromCloud() {
       return;
     }
 
+    storeSyncedIds({
+      tools: idsOf(tools), sheets: idsOf(sheets), hardware: idsOf(hardware),
+      templates: idsOf(templates), jobs: idsOf(jobs)
+    });
     if (cloudPushQueued) { cloudPushQueued = false; syncToCloud(); }
   }).catch(err => {
     cloudUnreachable(err && err.message);
@@ -833,8 +860,15 @@ function syncToCloud(){
       method: 'PUT',
       body: JSON.stringify(snapshot[t])
     })).then(r => readJson(r))
-  )).then(() => console.log('Cloud sync OK'))
-    .catch(err => cloudUnreachable(err && err.message));
+  )).then(() => {
+    // whatever we just pushed is now the shared truth
+    storeSyncedIds({
+      tools: idsOf(snapshot.tools), sheets: idsOf(snapshot.sheets),
+      hardware: idsOf(snapshot.hardware), templates: idsOf(snapshot.templates),
+      jobs: idsOf(snapshot.jobs)
+    });
+    console.log('Cloud sync OK');
+  }).catch(err => cloudUnreachable(err && err.message));
 }
 
 function loadFromLocalStorage() {
