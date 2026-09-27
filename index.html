@@ -701,6 +701,25 @@ function load() {
   }
 }
 
+/* Rows that exist only in the cloud are appended to `local`. Rows the user
+   created while the pull was still running are kept untouched. */
+function appendMissing(local, cloudRows){
+  const have = new Set(local.map(r => r && r.id));
+  (cloudRows || []).forEach(r => {
+    if (r && r.id && !have.has(r.id)) { local.push(r); have.add(r.id); }
+  });
+  return local;
+}
+
+function persistLocal(){
+  try {
+    localStorage.setItem(KEY, JSON.stringify({
+      tools: state.tools, sheets: state.sheets,
+      hardware: state.hardware, templates: state.templates, jobs: state.jobs
+    }));
+  } catch(e) {}
+}
+
 function syncFromCloud() {
   if (!cloudOn()) return Promise.resolve();
   return Promise.all(CLOUD_TABLES.map(t =>
@@ -709,32 +728,43 @@ function syncFromCloud() {
       .then(d => Array.isArray(d) ? d : [])
   )).then(rows => {
     const [tools, sheets, hardware, templates, jobs] = rows;
-    // Cloud has data -> it wins over the local copy (fresh device / other device)
-    if (tools.length || sheets.length || hardware.length || templates.length || jobs.length) {
+    const cloudHasData = tools.length || sheets.length || hardware.length ||
+                         templates.length || jobs.length;
+    const localHasData = state.tools.length || state.sheets.length ||
+                         state.hardware.length || state.templates.length || state.jobs.length;
+    const editedDuringPull = cloudPushQueued;
+
+    cloudPulled = true;
+
+    if (editedDuringPull) {
+      // The user already created/edited something before the pull landed:
+      // never overwrite it — only add the rows this device does not have yet.
+      appendMissing(state.tools, tools);
+      appendMissing(state.sheets, sheets);
+      appendMissing(state.hardware, hardware);
+      appendMissing(state.templates, templates);
+      appendMissing(state.jobs, jobs);
+      persistLocal();
+      render();
+    } else if (cloudHasData) {
+      // Nothing edited yet -> the cloud copy wins (fresh / other device)
       state.tools = tools;
       state.sheets = sheets;
       state.hardware = hardware;
       state.templates = templates;
       state.jobs = jobs;
-      try {
-        localStorage.setItem(KEY, JSON.stringify({
-          tools: state.tools, sheets: state.sheets,
-          hardware: state.hardware, templates: state.templates, jobs: state.jobs
-        }));
-      } catch(e) {}
+      persistLocal();
       render();
+    } else if (localHasData) {
+      // Cloud is empty but this device has data -> seed the database
+      syncToCloud();
+      return;
     }
-    cloudPulled = true;
-    const localHasData = state.tools.length || state.sheets.length ||
-                         state.hardware.length || state.templates.length || state.jobs.length;
-    const cloudEmpty = !tools.length && !sheets.length && !hardware.length &&
-                       !templates.length && !jobs.length;
-    // Cloud empty but this device has data -> seed the database
-    if (cloudEmpty && localHasData) { syncToCloud(); return; }
+
     if (cloudPushQueued) { cloudPushQueued = false; syncToCloud(); }
   }).catch(err => {
     console.warn('Cloud pull failed:', err);
-    // Offline: treat local state as authoritative so edits still push later
+    // Offline: local state stays authoritative so edits still push later
     cloudPulled = true;
     if (cloudPushQueued) { cloudPushQueued = false; syncToCloud(); }
   });
