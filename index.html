@@ -438,6 +438,8 @@ td.wrap{white-space:normal;word-break:break-word}
 <script>
 // Cloud configuration - set API_BASE to enable cloud mode
 const API_BASE = 'https://kargah-anbar-api.itsfordecosahand.workers.dev';
+// Shared key sent with every API call (the Worker rejects requests without it).
+const API_KEY = 'wYb9XPNSAGPE7ZLEe98hypIfzo8cvZZfHWte6Ug6myGutboJ';
 </script>
 
 <style>
@@ -687,8 +689,32 @@ const CLOUD_TABLES = ['tools', 'sheets', 'hardware', 'templates', 'jobs'];
 let cloudPulled = false;   // true once the first successful pull finishes
 let cloudPushQueued = false; // true if the user edited before the first pull
 let cloudPushTimer = null;
+let cloudWarned = false;   // only warn the user once per session
+
+function cloudUnreachable(reason){
+  console.warn('Cloud sync unavailable:', reason);
+  if (cloudWarned) return;
+  cloudWarned = true;
+  try {
+    toast('همگام‌سازی ابری در دسترس نیست — داده‌ها فقط روی همین دستگاه ذخیره می‌شود', 'warn');
+  } catch(_){}
+}
 
 function cloudOn(){ return typeof API_BASE !== 'undefined' && API_BASE; }
+
+/* Everything the Worker needs to accept a request. A non-JSON / HTML reply
+   means Cloudflare Access is asking for a login instead of the data. */
+function apiOptions(extra){
+  return Object.assign({
+    headers: { 'Content-Type': 'application/json', 'X-API-Key': API_KEY }
+  }, extra || {});
+}
+function readJson(res){
+  const type = (res.headers.get('content-type') || '');
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  if (type.indexOf('json') === -1) throw new Error('Auth required (login page)');
+  return res.json();
+}
 
 function load() {
   try {
@@ -723,8 +749,9 @@ function persistLocal(){
 function syncFromCloud() {
   if (!cloudOn()) return Promise.resolve();
   return Promise.all(CLOUD_TABLES.map(t =>
-    fetch(API_BASE + '/api/' + t)
-      .then(r => r.ok ? r.json() : [])
+    fetch(API_BASE + '/api/' + t, apiOptions())
+      .then(r => readJson(r).catch(() => []))
+      .catch(() => [])
       .then(d => Array.isArray(d) ? d : [])
   )).then(rows => {
     const [tools, sheets, hardware, templates, jobs] = rows;
@@ -763,7 +790,7 @@ function syncFromCloud() {
 
     if (cloudPushQueued) { cloudPushQueued = false; syncToCloud(); }
   }).catch(err => {
-    console.warn('Cloud pull failed:', err);
+    cloudUnreachable(err && err.message);
     // Offline: local state stays authoritative so edits still push later
     cloudPulled = true;
     if (cloudPushQueued) { cloudPushQueued = false; syncToCloud(); }
@@ -787,13 +814,12 @@ function syncToCloud(){
     templates: state.templates, jobs: state.jobs
   };
   return Promise.all(CLOUD_TABLES.map(t =>
-    fetch(API_BASE + '/api/' + t, {
+    fetch(API_BASE + '/api/' + t, apiOptions({
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(snapshot[t])
-    }).then(r => r.ok ? r.json() : Promise.reject(new Error('PUT ' + t + ' -> ' + r.status)))
+    })).then(r => readJson(r))
   )).then(() => console.log('Cloud sync OK'))
-    .catch(err => console.warn('Cloud push failed:', err));
+    .catch(err => cloudUnreachable(err && err.message));
 }
 
 function loadFromLocalStorage() {
