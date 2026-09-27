@@ -702,6 +702,12 @@ function syncFromCloud() {
       render();
     }
     cloudPulled = true;
+    const localHasData = state.tools.length || state.sheets.length ||
+                         state.hardware.length || state.templates.length || state.jobs.length;
+    const cloudEmpty = !tools.length && !sheets.length && !hardware.length &&
+                       !templates.length && !jobs.length;
+    // Cloud empty but this device has data -> seed the database
+    if (cloudEmpty && localHasData) { syncToCloud(); return; }
     if (cloudPushQueued) { cloudPushQueued = false; syncToCloud(); }
   }).catch(err => {
     console.warn('Cloud pull failed:', err);
