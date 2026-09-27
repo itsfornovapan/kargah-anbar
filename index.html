@@ -650,13 +650,14 @@ function assignInvoiceNumber(templateId){
 /* Number shown in the invoice header. Stored on the template itself (t.invNum)
    so it survives cloud sync and stays identical on every device. */
 function invoiceNumberFor(t){
-  if (t.invNum) return t.invNum;
+  const pad = n => String(n).padStart(3, '0');
+  if (t.invNum) return pad(t.invNum);
   const prefix = 'inv_num_' + t.id.slice(0,8);
   let stored = null;
   try { stored = localStorage.getItem(prefix); } catch(_){}
   if (stored){
-    t.invNum = stored;
-    return stored;
+    t.invNum = pad(stored);
+    return t.invNum;
   }
   let count = 0;
   try { count = parseInt(localStorage.getItem(INV_COUNTER_KEY) || '0', 10) || 0; } catch(_){}
@@ -665,7 +666,7 @@ function invoiceNumberFor(t){
     localStorage.setItem(INV_COUNTER_KEY, String(count));
     localStorage.setItem(prefix, String(count));
   } catch(_){}
-  t.invNum = String(count).padStart(3,'0');
+  t.invNum = pad(count);
   save();
   return t.invNum;
 }
