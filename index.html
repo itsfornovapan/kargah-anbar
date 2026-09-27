@@ -717,11 +717,20 @@ function mergeRows(prevIds, cloudRows, localRows, localWins){
   const synced = new Set(prevIds || []);
   const localList = (localRows || []).filter(r => r && r.id);
   const localIds = new Set(localList.map(r => r.id));
+
+  // Rows this device holds:
+  //   both sides have it -> our copy or theirs (localWins)
+  //   only we have it    -> brand new here (not yet synced) or deleted elsewhere
   const keepLocal = localList.filter(r =>
     inCloud.has(r.id) ? !!localWins : !synced.has(r.id));
-  if (!localWins) return keepLocal.concat(cloudRows);
-  const cloudOnly = (cloudRows || []).filter(r => r && r.id && !localIds.has(r.id));
-  return keepLocal.concat(cloudOnly);
+
+  // Rows only the server knows. A row we never synced is new (another device
+  // made it) -> take it. A row we synced but no longer hold was deleted here
+  // -> must NOT come back, otherwise a delete never leaves the database.
+  const takeCloud = (cloudRows || []).filter(r =>
+    r && r.id && (localIds.has(r.id) ? !localWins : !synced.has(r.id)));
+
+  return keepLocal.concat(takeCloud);
 }
 
 let cloudPulled = false;    // true once the first pull finishes (success or not)
